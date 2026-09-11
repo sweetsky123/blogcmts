@@ -60,6 +60,9 @@ jobs:
         env:
           VERCEL_TWIKOO_TOKEN: ${{ secrets.VERCEL_TWIKOO_TOKEN }}
         run: |
+          # 去除粘贴时可能混入的空白字符（GitHub 不会自动裁剪 secret）
+          VERCEL_TWIKOO_TOKEN="$(printf '%s' "$VERCEL_TWIKOO_TOKEN" | tr -d '[:space:]')"
+          echo "token length: ${#VERCEL_TWIKOO_TOKEN}"
           npm i -g vercel@latest
           vercel link --yes --project=blogcmts --token "$VERCEL_TWIKOO_TOKEN"
           vercel pull --yes --environment=production --token "$VERCEL_TWIKOO_TOKEN"
