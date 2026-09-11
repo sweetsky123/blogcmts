@@ -12,40 +12,56 @@ jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Check latest twikoo-vercel version
-        id: ver
+      - name: Check updates and bump versions
+        id: bump
         run: |
-          LATEST=$(curl -s https://registry.npmjs.org/twikoo-vercel/latest | jq -r .version)
-          CURRENT=$(jq -r '.dependencies["twikoo-vercel"]' package.json)
-          echo "latest=$LATEST" >> $GITHUB_OUTPUT
-          echo "current=$CURRENT" >> $GITHUB_OUTPUT
+          set -e
+          F=.github/workflows/update-twikoo.yml
 
-      - name: Commit version bump
-        if: steps.ver.outputs.latest != steps.ver.outputs.current
+          # Twikoo 云函数版本
+          TWIKOO_LATEST=$(curl -s https://registry.npmjs.org/twikoo-vercel/latest | jq -r .version)
+          TWIKOO_CURRENT=$(jq -r '.dependencies["twikoo-vercel"]' package.json)
+          if [ "$TWIKOO_LATEST" != "$TWIKOO_CURRENT" ]; then
+            jq --arg v "$TWIKOO_LATEST" '.dependencies["twikoo-vercel"]=$v' package.json > tmp && mv tmp package.json
+            echo "twikoo_updated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # 本工作流用到的官方 Actions 主版本（releases/latest 不含预发布版本）
+          for repo in checkout setup-node; do
+            LATEST=$(curl -s "https://api.github.com/repos/actions/$repo/releases/latest" | jq -r .tag_name | cut -d. -f1)
+            CURRENT=$(grep -oE "actions/$repo@v[0-9]+" "$F" | head -1 | cut -d@ -f2)
+            if [ "$LATEST" != "$CURRENT" ]; then
+              sed -i "s|actions/$repo@v[0-9]*|actions/$repo@$LATEST|g" "$F"
+              echo "actions_updated=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      - name: Commit and push
+        if: steps.bump.outputs.twikoo_updated == 'true' || steps.bump.outputs.actions_updated == 'true'
         run: |
-          jq --arg v "${{ steps.ver.outputs.latest }}" \
-             '.dependencies["twikoo-vercel"]=$v' package.json > tmp && mv tmp package.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # [skip ci] 让 Vercel 的 Git 集成跳过这次 push，部署改由下面一步用 CLI 上传
-          git commit -am "chore: update twikoo-vercel to ${{ steps.ver.outputs.latest }} [skip ci]"
+          git add -A
+          V=$(jq -r '.dependencies["twikoo-vercel"]' package.json)
+          # [skip ci] 让 Vercel 的 Git 集成跳过这次 push，部署改由下一步用 CLI 上传
+          git commit -m "chore: twikoo-vercel $V; sync action versions [skip ci]"
           git push
 
-      - uses: actions/setup-node@v4
-        if: steps.ver.outputs.latest != steps.ver.outputs.current
+      - uses: actions/setup-node@v7
+        if: steps.bump.outputs.twikoo_updated == 'true'
         with:
           node-version: 20
 
-      # 构建在 GitHub runner 上完成，Vercel 只接收现成产物，不消耗其构建资源
+      # 构建在 GitHub runner 上完成，Vercel 只接收现成产物，不执行构建
       - name: Build and deploy to Vercel
-        if: steps.ver.outputs.latest != steps.ver.outputs.current
+        if: steps.bump.outputs.twikoo_updated == 'true'
         env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_TWIKOO_TOKEN: ${{ secrets.VERCEL_TWIKOO_TOKEN }}
         run: |
           npm i -g vercel@latest
-          vercel link --yes --project=blogcmts --token "$VERCEL_TOKEN"
-          vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
-          vercel build --prod --token "$VERCEL_TOKEN"
-          vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"
+          vercel link --yes --project=blogcmts --token "$VERCEL_TWIKOO_TOKEN"
+          vercel pull --yes --environment=production --token "$VERCEL_TWIKOO_TOKEN"
+          vercel build --prod --token "$VERCEL_TWIKOO_TOKEN"
+          vercel deploy --prebuilt --prod --token "$VERCEL_TWIKOO_TOKEN"
