@@ -22,12 +22,30 @@ jobs:
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
           echo "current=$CURRENT" >> $GITHUB_OUTPUT
 
-      - name: Commit and push if updated
+      - name: Commit version bump
         if: steps.ver.outputs.latest != steps.ver.outputs.current
         run: |
           jq --arg v "${{ steps.ver.outputs.latest }}" \
              '.dependencies["twikoo-vercel"]=$v' package.json > tmp && mv tmp package.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -am "chore: update twikoo-vercel to ${{ steps.ver.outputs.latest }}"
+          # [skip ci] 让 Vercel 的 Git 集成跳过这次 push，部署改由下面一步用 CLI 上传
+          git commit -am "chore: update twikoo-vercel to ${{ steps.ver.outputs.latest }} [skip ci]"
           git push
+
+      - uses: actions/setup-node@v4
+        if: steps.ver.outputs.latest != steps.ver.outputs.current
+        with:
+          node-version: 20
+
+      # 构建在 GitHub runner 上完成，Vercel 只接收现成产物，不消耗其构建资源
+      - name: Build and deploy to Vercel
+        if: steps.ver.outputs.latest != steps.ver.outputs.current
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          npm i -g vercel@latest
+          vercel link --yes --project=blogcmts --token "$VERCEL_TOKEN"
+          vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
+          vercel build --prod --token "$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"
