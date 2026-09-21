@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  workflows: write
 
 jobs:
   update:
@@ -16,21 +17,32 @@ jobs:
 
       - name: Check updates and bump versions
         id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           F=.github/workflows/update-twikoo.yml
 
-          # Twikoo 云函数版本
+          # Twikoo 云函数版本（校验格式，API 失败时不写坏 package.json）
           TWIKOO_LATEST=$(curl -s https://registry.npmjs.org/twikoo-vercel/latest | jq -r .version)
+          case "$TWIKOO_LATEST" in
+            ''|*[!0-9.]*) echo "::warning::获取 twikoo-vercel 版本失败（$TWIKOO_LATEST），跳过更新"; TWIKOO_LATEST="" ;;
+          esac
           TWIKOO_CURRENT=$(jq -r '.dependencies["twikoo-vercel"]' package.json)
-          if [ "$TWIKOO_LATEST" != "$TWIKOO_CURRENT" ]; then
+          if [ -n "$TWIKOO_LATEST" ] && [ "$TWIKOO_LATEST" != "$TWIKOO_CURRENT" ]; then
             jq --arg v "$TWIKOO_LATEST" '.dependencies["twikoo-vercel"]=$v' package.json > tmp && mv tmp package.json
             echo "twikoo_updated=true" >> "$GITHUB_OUTPUT"
           fi
 
           # 本工作流用到的官方 Actions 主版本（releases/latest 不含预发布版本）
           for repo in checkout setup-node; do
-            LATEST=$(curl -s "https://api.github.com/repos/actions/$repo/releases/latest" | jq -r .tag_name | cut -d. -f1)
+            # 带认证调用 GitHub API，避开 runner 共享 IP 的未认证限流（60次/小时/IP）
+            LATEST=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/actions/$repo/releases/latest" | jq -r .tag_name | cut -d. -f1)
+            # 格式校验：限流/网络故障时 jq 解析出 null，此时跳过而不是写坏本文件
+            case "$LATEST" in
+              v[0-9]*) ;;
+              *) echo "::warning::获取 actions/$repo 最新版本失败（$LATEST），跳过自更新"; continue ;;
+            esac
             CURRENT=$(grep -oE "actions/$repo@v[0-9]+" "$F" | head -1 | cut -d@ -f2)
             if [ "$LATEST" != "$CURRENT" ]; then
               sed -i "s|actions/$repo@v[0-9]*|actions/$repo@$LATEST|g" "$F"
