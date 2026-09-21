@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   update:
@@ -34,31 +33,31 @@ jobs:
             echo "twikoo_updated=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # 本工作流用到的官方 Actions 主版本（releases/latest 不含预发布版本）
+          # 官方 Actions 主版本仅监测提醒（releases/latest 不含预发布版本）。
+          # GITHUB_TOKEN 没有 workflows 权限，改写本文件的 push 必然被拒，故不自动更新。
           for repo in checkout setup-node; do
             # 带认证调用 GitHub API，避开 runner 共享 IP 的未认证限流（60次/小时/IP）
             LATEST=$(curl -s -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/actions/$repo/releases/latest" | jq -r .tag_name | cut -d. -f1)
-            # 格式校验：限流/网络故障时 jq 解析出 null，此时跳过而不是写坏本文件
+            # 格式校验：限流/网络故障时 jq 解析出 null，此时跳过检查
             case "$LATEST" in
               v[0-9]*) ;;
-              *) echo "::warning::获取 actions/$repo 最新版本失败（$LATEST），跳过自更新"; continue ;;
+              *) echo "::warning::获取 actions/$repo 最新版本失败（$LATEST），跳过检查"; continue ;;
             esac
             CURRENT=$(grep -oE "actions/$repo@v[0-9]+" "$F" | head -1 | cut -d@ -f2)
             if [ "$LATEST" != "$CURRENT" ]; then
-              sed -i "s|actions/$repo@v[0-9]*|actions/$repo@$LATEST|g" "$F"
-              echo "actions_updated=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::actions/$repo 有新主版本 $LATEST（当前 $CURRENT），请手动更新 $F"
             fi
           done
 
       - name: Commit and push
-        if: steps.bump.outputs.twikoo_updated == 'true' || steps.bump.outputs.actions_updated == 'true'
+        if: steps.bump.outputs.twikoo_updated == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           V=$(jq -r '.dependencies["twikoo-vercel"]' package.json)
           # [skip ci] 让 Vercel 的 Git 集成跳过这次 push，部署改由下一步用 CLI 上传
-          git commit -m "chore: twikoo-vercel $V; sync action versions [skip ci]"
+          git commit -m "chore: twikoo-vercel $V [skip ci]"
           git push
 
       - uses: actions/setup-node@v7
